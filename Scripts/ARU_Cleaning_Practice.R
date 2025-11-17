@@ -23,7 +23,7 @@ aru_list <- list.files(aru_folder, pattern = "SMM_\\d{2}")
 aru_list
 
 # Extract ARU ID's
-aru_file_ids <- str_extract(aru_list, "SMM_\\d{2}")
+aru_file_ids <- str_extract(aru_list, "SMM_\\d{2}") %>% str_remove_all("_")
 aru_file_ids
 
 # Number of ARU's
