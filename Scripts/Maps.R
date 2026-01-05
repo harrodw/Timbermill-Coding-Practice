@@ -22,7 +22,7 @@ library(extrafont)
 font_import(prompt = FALSE)
 
 # Path to spatial data
-ras_path <- "C:\\Users\\willh\\OneDrive\\Documents\\NCSU\\Data\\Spatial_Data\\"
+ras_path <- "C:\\Users\\willh\\Documents\\NCSU\\Data\\Spatial_Data\\"
 
 # Add the turbines dataset
 turbines_csv <- read.csv(paste0(ras_path, "USGS_Turbines\\all_turbines.csv"))
@@ -105,7 +105,7 @@ state_cap_long %>%
   facet_wrap(~Year)
 
 # Path to the figures
-fig_path <- "C:\\Users\\willh\\OneDrive\\Documents\\NCSU\\Figures\\"
+fig_path <- "C:\\Users\\willh\\Documents\\NCSU\\Figures\\"
 
 # Number of breaks
 nbreaks <- 5
@@ -264,7 +264,8 @@ ggsave(plot = hh_year,
 
 # 4) energy consumption by source through time ######################################
 
-# Add in the data 
+# US data ----------------------------------------------------------------------------
+# Add in US the data 
 energy_wide <- read.csv("Data\\Renewable_Energy_Production_and_Consumption_by_Source_eia.csv")
 
 # View
@@ -324,46 +325,109 @@ glimpse(energy_long)
 # View the order of all power soruces
 sort(unique(energy_long$Source))
 
+# Global data ------------------------------------------------------------------
+# Ember data 
+ember_full <- read.csv("Data\\ember_yearly_energy.csv")
+# View
+glimpse(ember_full)
+count(ember_full, Subcategory, Variable)
+count(ember_full, Ember.region, Area.type)
+ember_full %>% filter(Ember.region == "") %>%  count(Area)
+
+# clean the EMBER data 
+ember_renewable <- ember_full %>% 
+  filter(
+           Variable %in% c("Hydro", "Solar", "Wind", "Bioenergy", "Coal", "Gas", "Nuclear") &
+           Category == "Electricity generation" &
+           Unit == "TWh" &
+           Area.type == "Region") %>% 
+  filter(Area == "World") %>% 
+  select(Year, Variable, Value) %>% 
+  mutate(Variable = case_when(Variable == "Hydro" ~ "Hydroelectric",
+                              # Variable == "Other Renewables" ~ "Other Renewables",
+                              TRUE ~ Variable)) %>% 
+  mutate(Variable = factor(Variable, levels = c(
+                                                "Wind", 
+                                                "Solar", 
+                                                "Hydroelectric", 
+                                                "Bioenergy", 
+                                                "Coal",
+                                                "Gas", 
+                                                "Nuclear")),
+         Value = replace_na(Value, 0)) %>% 
+  arrange(Year, Variable) 
+
+# View
+glimpse(ember_renewable)
+
 # make a custom pallete
 custom_pallet <- c(
-                   "blue4", 
-                   "chocolate4",
-                   "darkorchid4", 
-                   "green4", 
-                   "darkorange1",
-                   "skyblue", 
-                   "goldenrod1"
-                   ) 
+  "skyblue", 
+  "goldenrod1",
+  "blue4",
+  "green4",
+  "gray20",
+  "orchid4",
+  "darkorange1"
+  ) 
 
 # correct length?
-length(unique(energy_long$Source)) == length(custom_pallet)
+length(unique(ember_renewable$Variable)) == length(custom_pallet)
+
+# Label heights
+lab_hgt <- ember_renewable %>% 
+  filter(Year == 2024) %>% 
+  mutate(Label.Height = case_when(Variable == "Nuclear" ~  Value + 150,
+                                  Variable == "Solar" ~ Value - 50,
+                                  TRUE ~ Value + 50), 
+         Label.Year = case_when(Variable == "Wind" ~ 2025,
+                                Variable == "Solar" ~ 2025,
+                                Variable == "Hydroelectric" ~ 2026.3,
+                                Variable == "Bioenergy" ~ 2025.7,
+                                Variable == "Gas" ~ 2025,
+                                Variable == "Coal" ~ 2025,
+                                Variable == "Nuclear" ~ 2025.3,
+                                TRUE ~ 2024)
+         ) %>% 
+  select(Variable, Label.Year, Label.Height)
 
 # Plot
-eng_gen_time <- energy_long %>%
-  mutate(Year = year(Date)) %>% 
-  # reframe by year
-  group_by(Year, Source) %>% 
-  reframe(Year, Source, Power = mean(Power)) %>% 
-  distinct() %>% 
+eng_gen_time <- ember_renewable %>%
+  group_by(Variable) %>% 
+  left_join(lab_hgt, by = "Variable") %>% 
+  ungroup() %>% 
   ggplot() +
-  geom_line(aes(x = Year, y = Power, col = Source),
-              linewidth = 1.3,
-              alpha = 0.8
-  ) +
-  theme_classic() + 
+  geom_line(aes(x = Year, 
+                y = Value, 
+                col = Variable,
+                linewidth = Variable,
+                alpha = Variable
+  )) +
+  geom_text(aes(x = Label.Year, 
+                y = Label.Height,
+                label = Variable, 
+                col = Variable, 
+                alpha = Variable,
+                size = Variable),
+            size = 4) +
+  scale_alpha_manual(values = c(1, rep(0.4, 6))) +
   scale_color_manual(values = custom_pallet) +
+  scale_linewidth_manual(values = c(1.7, rep(1.2, 6))) +
+  scale_y_continuous(labels = function(x){paste(x, "TWh")}) +
+  scale_x_continuous(breaks = seq(from = 2000, to = 2029, by = 6), limits = c(2000, 2028)) +
   labs(
     x = "Year",
-    y = "Energy Consumption (Hundred GWH)"
+    y = "",
+    main = "Gloabl Annual Electricity Generation"
   ) +
-  scale_y_continuous() +
+  theme_classic() + 
   theme(
     plot.title = element_text(size = 18, family = "Open Sans"),
     axis.title.y = element_text(size = 18, family = "Open Sans"),
     axis.title.x = element_text(size = 18, family = "Open Sans"),
-    axis.text = element_text(size = 18, family = "Open Sans"),
+    axis.text = element_text(size = 16, family = "Open Sans"),
     legend.text = element_text(size = 18, family = "Open Sans"),
-    legend.position = "bottom",
+    legend.position = "none",
     legend.title = element_blank()
   )
 
@@ -374,7 +438,7 @@ eng_gen_time
 ggsave(plot = eng_gen_time,
        file = paste0(fig_path, "energy_consumption_plot.png"),
        width = 200,
-       height = 150,
+       height = 170,
        units = "mm",
        dpi = 300)
 

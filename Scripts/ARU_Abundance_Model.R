@@ -1,8 +1,12 @@
 ################################################################################
 # Title: Theoretical model for estimating relative abundance from ARU data 
 # Author: Will Harrod
-# Date Created: 2025-10-15
-
+# Date Created: 2025-11-18
+#
+################################################################################
+# Data Source: Dr. Ivana Mali
+#
+#
 ################################################################################
 # This model extends code from the following sources 
 #
@@ -23,314 +27,367 @@ rm(list = ls())
 # Add packages
 library(tidyverse)
 library(jagsUI)
+library(MCMCvis)
+
+# Prepare the detection data ---------------------------------------------------
 
 # Define a species 
-species_name <- "Warbling Vireo"
-species_file <- str_replace_all(species_name, " ", "_") 
-species_file <- str_replace_all(species_file, "_", "_") 
-species_file <- str_replace_all(species_file, "'", "") 
-species_file
+species_name <- "Hooded Warbler"
 
-# Define a interval length (minutes)
-survey_period <- 60
+# # Remove underscores and dashes
+species_file <- str_replace_all(species_name, " ", "_")
+species_file <- str_replace_all(species_file, "_", "_")
+species_file <- str_replace_all(species_file, "'", "")
 
-# Add all a birds data 
-all_birds <- read.csv("Data\\bear_river_birdnet_detections_june_2023.csv") %>% 
+# set a minimum confidence threashhold
+min_conf <- 0.15
+
+# Add the classifications data
+species_dat <-  read.csv("Data\\uf_birdnet_howa_classif_25.csv") %>% 
   # Arrange by AUR ID then by date then ny time
-  arrange(ARU.ID, Date, start.min, start.sec) %>% 
+  arrange(Date, Hour, Minute, Second, ) %>%
   # Convert date to a date
   mutate(Date = ymd(Date)) %>%
   select(-X) %>% 
-  # New column for survey interval
-  mutate(Interval = floor(start.min/survey_period)) %>% 
-  # New column for interval by date 
-  mutate(Date.Interval = paste(as.numeric(Date), Interval, sep = "-")) %>% 
-  # Create numeric versions of some of the variables 
-  mutate(ARU.ID.num = as.numeric(as.factor(ARU.ID)),
-         Date.Interval.num = as.numeric(as.factor(Date.Interval)))
-# View data 
-glimpse(all_birds)
-
-# Pull out a single species
-species <- all_birds %>% 
-  filter(common_name == species_name)
-
-# The number of intervals that length in a day
-nints_daily <- all_birds %>% 
-  distinct(Date, Date.Interval.num) %>%
-  filter(Date == min(Date)) %>% 
-  group_by(Date) %>% 
-  reframe(Date, nints = n()) %>% 
-  distinct() %>% 
-  pull(nints)
-# View
-nints_daily
-
-# Define all of the ARU sites surveyed
-ARUs_tbl <- all_birds %>% 
-  distinct(ARU.ID, ARU.ID.num) 
-# Make into a vector
-ARUs <- ARUs_tbl$ARU.ID.num
-# View
-ARUs_tbl
-ARUs
-
-# Are all of the ARUs present in the data?
-length(ARUs) == length(unique(ARUs))
-
-# Define all of the sites surveyed
-intervals_tbl <- all_birds %>% 
-  distinct(Date.Interval, Date.Interval.num) %>% 
-  arrange(Date.Interval.num)
-# Make into a vector
-intervals <- intervals_tbl$Date.Interval.num
-# View
-intervals_tbl
-intervals
-
-# Tibble of all sitte interval combinations
-site_ints <- all_birds %>% 
-  distinct(ARU.ID.num, Date.Interval.num) %>% 
-  arrange(ARU.ID.num, Date.Interval.num)
-
-# Are all of the intervals present in the data?
-length(intervals) == length(unique(intervals))
-
-# Define a number of rows to make into false positives
-n_false <- 10
-
-# Turn those rows into flase positives 
-false_pos_rows <- sort(floor(runif(n_false, 1, 200)))
-false_pos_rows
-
-# Add validations
-validations <- read.csv(paste0("Data\\bear_river_birdnet_detections_june_2023_", species_file, "_validated.csv")) %>% 
-  select(-X) %>% 
-  # Convert date to a date
-  mutate(Date = ymd(Date)) %>% 
-  # Remove unvalidated rows
-  filter(!is.na(True.Positive)) %>% 
-  # New column for 10 minute interval
-  mutate(Interval = floor(start.min/survey_period)) %>% 
-  # New column for interval by date 
-  mutate(Date.Interval = paste(as.numeric(Date), Interval, sep = "-")) %>% 
-  # Join the numeric ARU ID's
-  left_join(ARUs_tbl, by = "ARU.ID") %>% 
-  # Join the numeric intervals
-  left_join(intervals_tbl, by = "Date.Interval") %>% 
-  # Asign several random rows to be false positives
-  mutate(True.Positive = case_when(rowid %in% false_pos_rows ~ 0, 
-                                   TRUE ~ True.Positive))
+  # Filter by confidence
+  filter(Confidence >= min_conf) %>%
+  # Add row ID's
+  rowid_to_column() 
   
+# View data 
+glimpse(species_dat)
+
+# Validated subset of vocalizations --------------------------------------------
+# # I'm still working on actually validating these so for now I'll fake it
+# 
+# # Number of "validated" recordings
+# n_valid <- 100
+# 
+# # True positive rate
+# tp <- 0.8
+# 
+# # Number of true positives
+# n_true <- floor(n_valid*tp)
+# 
+# # number of false positives
+# n_false <- n_valid - n_true
+# 
+# # Simulate validated recordings 
+# valid_rows <- species %>% 
+#   slice_sample(n = n_valid) %>% 
+#   arrange(rowid) %>% 
+#   pull(rowid)
+# valid_rows
+# 
+# # Simulate false positives
+# false_pos_rows <- tibble(Row.ID = valid_rows) %>% 
+#   slice_sample(n = n_false) %>% 
+#   arrange(Row.ID) %>% 
+#   pull(Row.ID)
+# false_pos_rows
+# 
+# # Simulate the validations 
+# validations <- species %>% 
+#   # Asign several random rows to be true or false positives
+#   mutate(Validated = case_when(rowid %in% valid_rows ~ 1, 
+#                                !rowid %in% valid_rows ~ 0),
+#          False.Pos = case_when(Validated == 1 & rowid %in% false_pos_rows ~ 1, 
+#                               TRUE ~ 0),
+#          ) %>% 
+#   select(-rowid)
+# # View 
+# glimpse(validations)
+
+# Add the validations 
+validated_files <- read.csv(paste0("Data\\uf_audio_25_", species_file, "_validated.csv")) %>%
+  mutate(Hour = str_extract(File, "_\\d{2}")) %>% 
+  mutate(Hour = str_remove(Hour, "_")) %>% 
+  mutate(Hour = as.integer(Hour),
+         Date = ymd(Date)) %>% 
+  select(ARU.ID, Date, Hour, Minute, Second,  True.Positive)
+# View
+glimpse(validated_files)
+
+# Number of validations 
+n_valid <- nrow(validated_files)
+# Number of true positives
+n_true <- sum(validated_files$True.Positive)
+# Number of false possitives
+n_false <- n_valid - n_true
+# view
+c(n_valid, n_true, n_false)
+
+# Join with the species information
+validations <- left_join(species_dat, validated_files, by = c("ARU.ID", "Date", "Hour", "Minute", "Second")) %>% 
+  # add a column for valdiated or not
+  mutate(Validated = case_when(!is.na(True.Positive) ~ 1, TRUE ~ 0)) %>% 
+  mutate(True.Positive = replace_na(True.Positive, 0))
 # View
 glimpse(validations)
 
-# Make a dataframe of true positives 
-true_pos <- validations %>% 
-  filter(True.Positive == 1)
 
-# How many observations?
-nrow(all_birds)
+# Prepare the survey effort data -----------------------------------------------
 
-# How many days?
-length(unique(all_birds$Date))
+# Add in the ARU metadata 
+aru_info_tmp <- read.csv("C:\\Users\\willh\\Documents\\NCSU\\Data\\Audio\\Umstead_Farm_Downloads\\umstead_station_sites.csv")
+# View
+glimpse(aru_info_tmp)
 
-# How many ARU's?
-length(ARUs)
+# View the names 
+distinct(aru_info_tmp, Id, Name)
 
-# How many intervals 
-length(intervals)
+# Clean the ARU metadata
+aru_info <- aru_info_tmp %>% 
+  # Pull out the nessesary imformation
+  select(Id, Name, Latitude, Longitude, Timezone) %>% 
+  # arrange by aru ID
+  arrange(Id) %>% 
+  # Convert ID to character
+  mutate(Id = as.character(Id)) 
 
-# How many were validated? 
-nrow(validations)
+# Path to the folder with all audio data 
+aru_folder <- "C:\\Users\\willh\\Documents\\NCSU\\Data\\Audio\\Umstead_Farm_Data"
 
-# How many are true positives?
-nrow(true_pos)
+# View all ARU's in that folder 
+aru_file_list_raw <- sort(list.dirs(aru_folder))
+aru_file_list <- aru_file_list_raw[2:length(aru_file_list_raw)]
+# c(2, 3, 4, 6, 7, 8, 9, 10)
+
+# View
+aru_file_list
+
+# Number of ARU's
+nARUs <- length(aru_file_list)
+
+# Storage object for the survey periods 
+rec_ints_tmp1 <- tibble()
+
+# Loop over the ARU data and extract the survey periods 
+for(i in 1:nARUs){
+
+  # Path to a single ARU
+  audio_path <- aru_file_list[i]
+  
+  # Extract the ID of that ARU
+  aru_id <- str_extract(audio_path, "\\d{5}")
+  
+  # Name of that ARU
+  aru_name <- aru_info %>% filter(Id == aru_id) %>% pull(Name)
+
+  # Calculate survey periods 
+  rec_ints_tmp2 <- tibble(File.Name = list.files(audio_path)) %>% 
+    # Only look at recordings from May and June 2024
+    # filter(str_detect(File.Name, "202405") | str_detect(File.Name, "202406")) %>%
+    # Only look at three hours of recordings 
+    filter(str_detect(File.Name, "_06") | str_detect(File.Name, "_07") | str_detect(File.Name, "_08")) %>% 
+    # print(n = Inf)
+    # Extract when each recording took place 
+    mutate(
+      # ARU name 
+      ARU.Name = aru_name,
+      # Date
+      Date = ymd(str_extract(File.Name, "2024\\d{4}")),
+      # Recording Hour
+      Hour = case_when(str_detect(File.Name, "_06") ~ 1,
+                           str_detect(File.Name, "_07") ~ 2,
+                           str_detect(File.Name, "_08") ~ 3,
+                           )) %>% 
+    # Select Relevant columns 
+    select(ARU.Name, Date, Hour) %>%
+    arrange(Date, Hour) %>% 
+    distinct()
+  # rec_ints_tmp2 %>%  arrange(Date, Hour) %>%  distinct(Date, Hour) %>% print(n = Inf)
+  # Bind to the Hours for other ARU's
+  rec_ints_tmp1 <- bind_rows(rec_ints_tmp1, rec_ints_tmp2) 
+}
+
+# Save as a new object
+rec_ints <- rec_ints_tmp1 %>% 
+  # Put in chronological order
+  mutate(Hour = as.integer(Hour),
+         # Combine date and Hour
+         Recording.Interval = paste0(Date, "-H", Hour))
+
+# View
+glimpse(rec_ints)
+count(rec_ints, ARU.Name)
+
+# Minimum intervals per ARU
+min_ints <- rec_ints %>% 
+  count(ARU.Name) %>%
+  arrange(n) %>% 
+  slice_head(n = 1) %>% 
+  pull(n)
+
+# Combine all Hours with the species detentions ----------------------------
+# View validations again
+glimpse(validations)
+
+# Number of vocalization by ARU and recording period
+voc_count_tmp1 <- validations %>% 
+  # Detections by site
+  group_by(ARU.Name, Date, Hour) %>% 
+  mutate(Hour = as.integer(Hour) - 5) %>% 
+  reframe(ARU.Name, Date, Hour, 
+          n.Vocalizations = n(), 
+          n.Validated= sum(Validated), 
+          n.True = sum(True.Positive),
+          Confidence = mean(Confidence)
+            ) %>%
+  distinct()
+  
+# View
+glimpse(voc_count_tmp1)
+hist(voc_count_tmp1$Confidence)
+
+# Fill in Hours with no detections
+voc_count <- rec_ints %>% 
+  # Join with Hours that had no detections
+  left_join(voc_count_tmp1, by = c("ARU.Name", "Date", "Hour")) %>% 
+  # Put in a good order
+  arrange(Date, Hour, ARU.Name) %>% 
+  # Replace NA's with 0
+  mutate(n.Vocalizations = replace_na(n.Vocalizations, 0),
+         n.Validated = replace_na(n.Validated, 0),
+         n.True = replace_na(n.True, 0),
+         Confidence = log(Confidence)
+         ) %>% 
+  # Define surveys with any detections
+  mutate(Present = case_when(n.Vocalizations > 0 ~ 1, n.Vocalizations == 0 ~ 0)) %>%
+  # Make numeric versions 
+  mutate(Date.num = as.integer(as.factor(Date)),
+         ARU.ID.num = as.integer(as.factor(ARU.Name))
+         ) %>% 
+  group_by(ARU.ID.num) %>%
+  slice_head(n = min_ints) %>% 
+  mutate(Recording.Interval.num = as.integer(as.factor(Recording.Interval))) %>% 
+  ungroup() %>%
+  # Select Relevant columns
+  select(ARU.ID.num, Recording.Interval.num, Date.num, Hour, n.Vocalizations, Present, n.Validated, n.True, Confidence)
+  
+# View
+glimpse(voc_count)
+sort(voc_count$Recording.Interval.num)
+sort(voc_count$Date.num)
+hist(scale(voc_count$Confidence)[,1])
+
+# View as a matrix
+voc_count %>% 
+  select(ARU.ID.num, Recording.Interval.num, n.Vocalizations) %>% 
+  pivot_wider(names_from = Recording.Interval.num, values_from = n.Vocalizations)
+
+# Define the number of Hours in each day
+nints_daily <- length(unique(voc_count$Hour))
 
 # 1.2) Convert data to a format jags can use ---------------------------------
 
 # Constants --------------------------------------------------------------------
 
-# Define R (the number of sites) and J.max (the maximum number of sampling intervals)
-R <- length(ARUs)
-J.max <- length(intervals)
+# Define R (the number of sites) and J (the maximum number of sampling Hours)
+R <- max(voc_count$ARU.ID.num)
+J <- max(voc_count$Recording.Interval.num)
 
 # View
 R
-J.max
-
-# J ----------------------------------------------------------------------
-
-# Define J, the number of survey periods at each site
-J <- all_birds %>% 
-  group_by(ARU.ID.num) %>% 
-  reframe(ARU.ID.num, Max.Int = max(Date.Interval.num)) %>% 
-  distinct() %>% 
-  pull(Max.Int)
-# View
 J
+
+# # J ----------------------------------------------------------------------
+# 
+# # Define J, the number of survey periods at each site
+# J <- voc_count %>% 
+#   group_by(ARU.ID.num) %>% 
+#   reframe(ARU.ID.num, Max.Int = length(unique(Recording.Interval.num))) %>% 
+#   distinct() %>% 
+#   pull(Max.Int)
+# # View
+# J
 
 # v ------------------------------------------------------------------------------
 # Define v, the number of positive detections by site and day, whether true or false
-v <- all_birds %>% 
-  # Define all sampling periods
-  distinct(ARU.ID.num, Date.Interval.num) %>% 
-  # Join with the species specific detections 
-  left_join(species, by = c("ARU.ID.num", "Date.Interval.num")) %>% 
-  # Add a column for whether or not any detections occured during that period
-  mutate(Detection = case_when(!is.na(common_name) ~ 1,
-                               is.na(common_name) ~ 0)) %>% 
-  # Calculate detections by by sampling period
-  group_by(Date.Interval.num, ARU.ID.num) %>% 
-  reframe(Date.Interval.num, ARU.ID.num, Count = sum(Detection)) %>% 
-  distinct() %>%  
-  # Arrange in a better order 
-  arrange(Date.Interval.num, ARU.ID.num) %>%
-  # Join with sites that had no observations
-  right_join(site_ints, by = c("ARU.ID.num", "Date.Interval.num")) %>% 
-  # Convert to a detection history table
-  pivot_wider(names_from = Date.Interval.num, values_from = Count) %>% 
-  # Populate zero-counts
-  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>% 
-  # Put the rows in the right order
-  arrange(ARU.ID.num) %>% 
-  # Remove the ARU ID column
+v <- voc_count %>% 
+  select(ARU.ID.num, Recording.Interval.num, n.Vocalizations) %>% 
+  arrange(ARU.ID.num, Recording.Interval.num) %>% 
+  pivot_wider(names_from = Recording.Interval.num, values_from = n.Vocalizations) %>% 
   select(-ARU.ID.num) %>% 
-  # Convert to a matrix
+  relocate(all_of(str_sort(everything(), numeric = TRUE))) %>% 
+  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>% 
   as.matrix()
 # View
 v
 str(v)
+
 # y ------------------------------------------------------------------------------
 
 # Define y, a matrix of whether or not each site had any detections 
-y <- all_birds %>% 
-  # Define all sampling periods
-  distinct(ARU.ID.num, Date.Interval.num) %>% 
-  # Join with the species specific detections 
-  left_join(species, by = c("ARU.ID.num", "Date.Interval.num")) %>% 
-  # Add a column for whether or not any detections occured during that period
-  mutate(Detection = case_when(!is.na(common_name) ~ 1,
-                               is.na(common_name) ~ 0)) %>% 
-  # Calculate detections by by sampling period
-  group_by(Date.Interval.num, ARU.ID.num) %>% 
-  reframe(Date.Interval.num, ARU.ID.num, Count = sum(Detection)) %>% 
-  mutate(Count = case_when(Count > 0 ~ 1, Count == 0 ~ 0)) %>% 
-  distinct() %>%  
-  # Arrange in a better order 
-  arrange(Date.Interval.num, ARU.ID.num) %>%
-  # Join with sites that had no observations
-  right_join(site_ints, by = c("ARU.ID.num", "Date.Interval.num")) %>% 
-  # Convert to a detection history table
-  pivot_wider(names_from = Date.Interval.num, values_from = Count) %>% 
-  # Populate zero-counts
+y <- voc_count %>% 
+  select(ARU.ID.num, Recording.Interval.num, Present) %>% 
+  arrange(Recording.Interval.num, ARU.ID.num) %>%
+  pivot_wider(names_from = Recording.Interval.num, values_from = Present) %>% 
+  select(-ARU.ID.num) %>%
+  relocate(all_of(str_sort(everything(), numeric = TRUE))) %>% 
   mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>% 
-  # Put the rows in the right order
-  arrange(ARU.ID.num) %>% 
-  # Remove the ARU ID column
-  select(-ARU.ID.num) %>% 
-  # Convert to a matrix
   as.matrix()
 
 # View
 y
 str(y)
+
 # n ------------------------------------------------------------------------------
 
-# Group the number of validations by grid and survey
-valids_count_int <- validations %>% 
-  group_by(ARU.ID.num, Date.Interval.num) %>% 
-  reframe(ARU.ID.num, Date.Interval.num, Valid.Count = n()) %>% 
-  arrange(ARU.ID.num, Date.Interval.num) %>% 
-  distinct()
-# View
-print(valids_count_int, n = nrow(valids_count_int))
-valids_count_int %>% count(ARU.ID.num)
+# Define the proportion validated 
+# prop_val <- 0.5
 
 # Define n, the number of validations for each survey window 
-n <- all_birds %>% 
-  # Define all sampling periods for each site 
-  distinct(Date.Interval.num, ARU.ID.num) %>%  
-  # Join with the validations
-  left_join(valids_count_int, by = c("Date.Interval.num", "ARU.ID.num")) %>% 
-  # Arrange in a better order 
-  arrange(Date.Interval.num, ARU.ID.num) %>% 
-  # Convert to a detection history table
-  pivot_wider(names_from = Date.Interval.num, values_from = Valid.Count) %>% 
-  # Populate zero-counts
-  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>% 
-  # Put the rows in the right order
-  arrange(ARU.ID.num) %>% 
-  # Remove the ARU ID column
-  select(-ARU.ID.num) %>% 
-  # Convert to a matrix
+# n <- floor(v*prop_val)
+n <- voc_count %>%
+  select(ARU.ID.num, Recording.Interval.num, n.Validated) %>% 
+  arrange(Recording.Interval.num, ARU.ID.num) %>%
+  pivot_wider(names_from = Recording.Interval.num, values_from = n.Validated) %>% 
+  select(-ARU.ID.num) %>%
+  relocate(all_of(str_sort(everything(), numeric = TRUE))) %>% 
+  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>%
   as.matrix()
 # View
 n
 str(n)
+sum(rowSums(n))
 
 # k ---------------------------------------------------------------------------
 
-# Group the number of true positives by grid and survey
-pos_count <- true_pos %>% 
-  group_by(ARU.ID.num, Date.Interval.num) %>% 
-  reframe(ARU.ID.num, Date.Interval.num, Valid.Count = sum(True.Positive)) %>% 
-  arrange(ARU.ID.num, Date.Interval.num) %>% 
-  distinct() 
-# View
-print(pos_count, n = Inf)
-count(pos_count, ARU.ID.num)
-
-# Construct k, the number of true positives by site and day
-k <- all_birds %>% 
-  # Define unique survey periods
-  distinct(ARU.ID.num, Date.Interval.num) %>% 
-  # Add in the number of true posiitives 
-  left_join(pos_count, by = c("ARU.ID.num", "Date.Interval.num")) %>% 
-  # Arrange in a better order 
-  arrange(Date.Interval.num, ARU.ID.num) %>% 
-  # Convert to a detection history table
-  pivot_wider(names_from = Date.Interval.num, values_from = Valid.Count) %>% 
-  # Populate zero-counts
-  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>% 
-  # Put the rows in the right order
-  arrange(ARU.ID.num) %>% 
-  # Remove the ARU ID column
+# Define k, the number of validated true positives by site and day
+# k <- floor(n*tp_rate)
+k <- voc_count %>%
+  select(ARU.ID.num, Recording.Interval.num, n.True) %>% 
+  arrange(Recording.Interval.num, ARU.ID.num) %>%
+  pivot_wider(names_from = Recording.Interval.num, values_from = n.True) %>% 
   select(-ARU.ID.num) %>%
-  # Convert to a matrix
+  relocate(all_of(str_sort(everything(), numeric = TRUE))) %>% 
+  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>%
   as.matrix()
 # View
-k
+k 
 str(k)
+sum(rowSums(k))
 
 # Compare n to k
-n - k
+sum(rowSums(n)) - sum(rowSums(k))
 
 # J.a -----------------------------------------------------------------------------
 
-# Define all of the sites
-all_sites <- distinct(all_birds, ARU.ID.num)
-
-# Define J.a, the number intervals with vocalizations at each site 
-J.a <- species %>% 
-  # distinct survey periods 
-  distinct(ARU.ID.num, Date.Interval.num) %>% 
-  # Number of intervals with vocalizations at each site
-  count(ARU.ID.num) %>% 
-  # Add in the sites that may have no vocalizations
-  left_join(all_sites, by = "ARU.ID.num") %>% 
-  # Put in the right order
-  arrange(ARU.ID.num) %>%
-  # Fill in missing values 
-  mutate(n = replace_na(n, 0)) %>% 
-  # Vectorize that information
-  pull(n)
+# Define J.a, the number Hours with vocalizations at each site 
+J.a <- voc_count %>% 
+  filter(Present == 1) %>% 
+  group_by(ARU.ID.num) %>% 
+  reframe(n.Ints = n()) %>% 
+  distinct() %>% 
+  pull(n.Ints)
 # View# View# View
 J.a
 
 # sites.a ------------------------------------------------------------------------
 # Indexes of where acoustic data were obtained for the specific species
-sites.a <- species %>% 
+sites.a <- voc_count %>% 
+  filter(Present == 1) %>% 
   distinct(ARU.ID.num) %>% 
   arrange(ARU.ID.num) %>% 
   pull(ARU.ID.num)
@@ -339,7 +396,8 @@ sites.a
 
 # sites.v ------------------------------------------------------------------------
 # Indexes of where acoustic data were validated for the specific species
-sites.v <- validations %>% 
+sites.v <- voc_count %>% 
+  filter(n.Validated >= 1) %>% 
   distinct(ARU.ID.num) %>% 
   arrange(ARU.ID.num) %>% 
   pull(ARU.ID.num)
@@ -348,16 +406,15 @@ sites.v
 
 # J.a -----------------------------------------------------------------------------
 
-# Define J.val, the number of intervals where vocalizations were validated at each site
-J.val <- validations %>% 
-  distinct(ARU.ID.num, Date.Interval.num) %>%  
-  group_by(ARU.ID.num) %>% 
-  reframe(ARU.ID.num, Valid.Count = n()) %>% 
-  distinct() %>% 
-  arrange(ARU.ID.num) %>% 
-  pull(Valid.Count)
+# Define J.val, the number of Hours where vocalizations were validated at each site
+J.val <- voc_count %>% 
+  filter(n.Validated >= 1) %>% 
+  count(ARU.ID.num) %>% 
+  pull(n)
+
 # View
 J.val
+sum(J.val)
 
 # R.val ------------------------------------------------------------------------
 # The number of sites where acoustic data was validated
@@ -375,99 +432,120 @@ R.val == length(J.val)
 # are used in the zero-truncated Poisson.
 
 # Storage object for time with detections
-times.a <- matrix(NA, nrow = R, ncol = J.max)
+times.a <- matrix(NA, nrow = R, ncol = max(rowSums(y)))
  
 # Add the time indexing information
 for (i in 1:R) {
+
   # Define all of periods with vocalizations for a single ARU
-  ints.a <- species %>% 
-    filter(ARU.ID.num == i) %>% 
-    distinct(Date.Interval.num) %>% 
-    pull(Date.Interval.num)
+  ints.a <- voc_count %>% 
+    filter(ARU.ID.num == i & Present == 1) %>% 
+    arrange(Recording.Interval.num) %>% 
+    distinct(Recording.Interval.num) %>% 
+    pull(Recording.Interval.num)
   # Assign those values to the indexing variable 
   times.a[i, 1:length(ints.a)] <- ints.a
 }
 # View
 times.a
+v
+
 
 # times.v --------------------------------------------------------------------
 # The times when each valedation occured
 # Storage object for time with detections
-times.v <- matrix(NA, nrow = R.val, ncol = max(J))
+times.v <- matrix(NA, nrow = R.val, ncol = max(J.val))
 
 # Add the time indexing information
 for (i in 1:R.val) {
+
   # Define all of periods with validations for a single ARU
-  ints.v <- validations %>% 
-    filter(ARU.ID.num == i) %>% 
-    distinct(Date.Interval.num) %>% 
-    pull(Date.Interval.num)
+  ints.v <- voc_count %>% 
+    filter(ARU.ID.num == i) %>%
+    filter(n.Validated >= 1) %>% 
+    distinct(Recording.Interval.num) %>% 
+    pull(Recording.Interval.num)
   # Assign those values to the indexing variable 
   times.v[i, 1:length(ints.v)] <- ints.v
   
 }
 # View
 times.v
+J.val
+n
+k
 
 # Day -------------------------------------------------------------------------
 
 # Number of days surveyed
-n.days <- length(unique(all_birds$Date))
+# n.days <- length(unique(voc_count$Date.num))
+
+# # Vector of days
+# days_vect <- voc_count %>%
+#   mutate(Date.num = replace_na(Date.num, 49)) %>% 
+#   distinct(Recording.Interval.num, Date.num) %>% 
+#   arrange(Recording.Interval.num) %>% 
+#   pull(Date.num)
 
 # Day when each survey took place 
-days <- all_birds %>% 
-  select(ARU.ID, Date.Interval) %>% 
-  arrange(Date.Interval, ARU.ID) %>% 
-  # Convert date and ARU ID to factors
-  mutate(Date.Interval = as.numeric(as.factor(Date.Interval)),
-         ARU.ID = as.numeric(as.factor(ARU.ID))) %>% 
-  # Expand to include values with no recordings
-  expand(ARU.ID, Date.Interval) %>% 
-  distinct(ARU.ID, Date.Interval) %>% 
-  # Define date based on the interval
-  mutate(Date = ceiling(Date.Interval/nints_daily)) %>% 
-  # convert to a wider table
-  pivot_wider(names_from = Date.Interval, values_from = Date) %>% 
-  #Remove the ARU ID Column
-  select(-ARU.ID) %>% 
-  # Convert to a matrix
+date <- voc_count %>% 
+  mutate(Date.num = round(scale(Date.num)[,1], 2)) %>% 
+  select(ARU.ID.num, Recording.Interval.num, Date.num) %>% 
+  arrange(Recording.Interval.num, Date.num) %>%
+  pivot_wider(names_from = Recording.Interval.num, values_from = Date.num) %>% 
+  select(-ARU.ID.num) %>%
+  relocate(all_of(str_sort(everything(), numeric = TRUE))) %>% 
+  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>%
+  as.matrix()
+  
+  
+  # matrix(rep(days_vect, R), nrow = R, ncol = J, byrow = TRUE)
+ 
+# View
+date
+
+# Confidence level  ---------------------------------------------------------------------------
+
+# Average confidence for all validations by site and visit
+conf <- voc_count %>%
+  select(ARU.ID.num, Recording.Interval.num, Confidence) %>% 
+  arrange(Recording.Interval.num, ARU.ID.num) %>%
+  mutate(Confidence = round(Confidence, 2)) %>% 
+  pivot_wider(names_from = Recording.Interval.num, values_from = Confidence) %>% 
+  select(-ARU.ID.num) %>%
+  relocate(all_of(str_sort(everything(), numeric = TRUE))) %>% 
+  mutate(across(.cols = everything(), .fns = ~replace_na(., 0))) %>%
   as.matrix()
 # View
-days
+conf
+str(conf)
 
 # K ----------------------------------------------------------------------------
 
-# Define K, the latent number of true positives at each site
+# Define K, the latent number of true positives at each visit to each site
 K.inits <- matrix(NA, nrow = R.val, ncol = max(J.val))
 
-# Define an estimated proportion of true positives 
-tp_rate <- 0.05 
+# Estimated true posiitve rate
+tp_rate <- n_true/n_valid
 
 # Initialize each site with the number of true positive validations that occurred there
 for(i in 1:R.val){
   for(j in 1:J.val[i]){
-    # Pull out the number of vocalizations that that site
-    voc <- v[sites.v[i], times.v[i, j]]
-    # Pull out the number of validations that that site
-    pos <- k[sites.v[i], times.v[i, j]]
-    # Define the number of unvalidated vocalizations 
-    unval <- voc - val
-    
-    # Subtract 1 from the sites with more than 1 validation
-    # if(voc == 1) {
-    #   pos <- voc 
-    # } else {
-    #   pos <- voc - floor(fp_rate*voc)
-    # } 
-    
     # Asign soething between validations and vocalizations as the initial values for K
-    K.inits[i, j] <- val + floor(unval*tp_rate)
+    K.inits[i, j] <- ceiling(v[sites.v[i], times.v[i, j]] * tp_rate)
   }
 }
 
 # View
 K.inits
 str(K.inits)
+
+# N ----------------------------------------------------------------------------
+
+# Define N, the true abundance at each site
+N.inits <- ceiling(apply(k, 1, max)*0.5) + 1
+# View
+N.inits
 
 # ------------------------------------------------------------------------------
 
@@ -476,7 +554,7 @@ str(K.inits)
 # 2.1) Model specification -----------------------------------------------------
 
 # File path to send the outputs
-mod_path <- "C:\\Users\\willh\\OneDrive\\Documents\\NCSU\\Disertation_Code\\Bayesian_Mods\\"
+mod_path <- "C:\\Users\\willh\\Documents\\NCSU\\Disertation_Code\\Bayesian_Mods\\"
 
 # Model statement using nimble 
 mod_name <- "aru_abund_mod.txt"
@@ -488,106 +566,99 @@ cat(file = paste0(mod_path, mod_name),
 ####### Model definitions #############################
     # Indexing -------------------------------------------
     # i = sampling locations (ARU's)
-    # j = 10-minute sampling intervals 
+    # j = 10-minute sampling Hours 
     # R = total number of sites
     # R.Val = Number of ARU sites with validations
-    # J.max = Maximum number of intervals at any site
-    # J number of sampling intervals at each site
-    # J.val = Number of intervals at each site with validations
-    # times.a = Times when acoustic activity occured
-    # times.v = Times when valedations occured
-    # sites.a = Sites with at least one vocaliztion
-    # sites.v = Sites with at least one valedation
+    # J = Maximum number of Hours at any site
+    # J number of sampling Hours at each site
+    # J.val = Number of Hours at each site with validations
+    # times.a = Times when acoustic activity occurred
+    # times.v = Times when validations occurred
+    # sites.a = Sites with at least one vocalization
+    # sites.v = Sites with at least one validation
     # Data ------------------------------------------------
-    # y = A matrix of sites by visits for whether or not each site had any detections
-    # v = A matrix of sites by visits for the number of vocaliztions 
+    # y = A matrix of sites by visits for whether or not each site had any detection
+    # v = A matrix of sites by visits for the number of vocalizations 
     # n = Number of validations at each visit to each site
-    # k = Number of validated posiitves at each visit to each site
+    # k = Number of validated positives at each visit to each site
+    # conf = average confidence score for all validations at each visit to each site 
     # Parameters ------------------------------------------
-    # omega = flase psoitive rate 
+    # omega = false positive rate 
     # Delta = Singing rate
-    # phi = Oversispersion in singing rate 
-    # beta0.site = Ranndom intercept on abundnace at each site
+    # phi = Overdispersion in singing rate 
+    # beta0.site = Random intercept on abundance at each site
     # alpha0 = Intercept on detection probability
     # alpha.N = Effect of the number of individuals on detection probability 
     # Latent variables ------------------------------------
-    # N = Latent reletive abundance at each site
+    # N = Latent relative abundance at each site
     # K = Latent number of true positives 
     # Q = Latent number of false positives
     # p = Probability of detecting at least one vocalization in an acoustic recording
-    # tp = True positive rate of detections 
+    # tp = True positive rate  
     
     # Priors ----------------------------------------------------------------
     
-    
     # Beta node (parameters that influence abundance) ----
-    
     # Hyper parameter on the variation between sites 
     tau.beta0.site ~ dgamma(0.01, 0.01)
-    
     # Random intercept on relative abundance at each site
     for(i in 1:R){
       beta0.site[i] ~ dnorm(0, tau.beta0.site) 
     }
     
-    # Alpha node (parameters that influence detection probability) ----
+    # Alpha node (parameters that influence detecting a bird) ----
     mu.alpha ~ dunif(0, 1)
     alpha0 <- log(mu.alpha / (1 - mu.alpha)) 
-    alpha.N ~ dunif(0, 1000)
+    alpha.N ~ dgamma(0.01, 0.01)
     
     # Gamma node (Parameters that influence vocalization rate) ----
+    gamma0 ~ dnorm(0, 0.1)
+    gamma.date ~ dnorm(0, 0.1)
+    gamma.date2 ~ dnorm(0, 0.1)
     
-    # Hyperprior for the effect of day
-    tau.gamma.day ~ dgamma(0.01, 0.01)
-    
-    # Effect of day on number of detection 
-    for (d in 1:n.days) {
-      gamma.day[d] ~ dnorm(0, tau.gamma.day)
-    } # d
-    
-    # Estimated rate of false positives ----
-    omega ~ dunif(0, 1000) 
+    # Rate of false positives
+    omega ~ dgamma(0.01, 0.01)
     
     # Phi node (Unmodeled overdispersion in singing rate) ----
-    
-    # Hyper prior for unmodeled variation in abundance 
-    a.phi ~ dunif(0, 100)
-    
+    # Hyper prior for unmodeled variation in singing rate
+    a.phi ~ dgamma(0.01, 0.01)
     # Unexplained variation in singing rate
     for (i in 1:R) {
-      for (j in 1:J.max) { 
+      for (j in 1:J) { 
         phi[i, j] ~ dgamma(a.phi, a.phi)
       } # j
     } # i
     
-    # Liklihood and process model -------------------------------------------
+    # Liklihood ----------------------------------------------------------------
+    
+    # ARU's --------------------
     for (i in 1:R) {
       
       # Linear combination expected for abundance at each point
-      log(lambda[i]) <- beta0.site[i]
+      log(lambda.N[i]) <- beta0.site[i]
       
       # Abudnance at each point
-      N[i] ~ dpois(lambda[i])
+      N[i] ~ dpois(lambda.N[i])
       
-      # Linear combination for the probability of detecting a bird at each point 
+      # Linear combination for the probability of detecting at least one bird at each point 
       logit(p[i]) <- alpha0 + alpha.N * N[i] 
       
       # Acoustic Data -------------------
-      for (j in 1:J[i]) { 
+      for (j in 1:J) { 
         
         # Log linear combination for the per individual rate of vocalization
-        log(delta[i, j]) <- gamma.day[days[i, j]]
+        log(delta[i, j]) <- gamma0 + gamma.date * date[i, j] + gamma.date2 * pow(date[i, j], 2)
         
-        # Probability of detecting an individual 
+        # Probability of detecting at least one bird
         y[i, j] ~ dbern(p[i])
         
         # True positive rate 
         tp[i, j] <- delta[i, j] * N[i] / (delta[i, j] * N[i] + omega)
         
         # Posterior predictive checks for Bayesian P-value for observations
-        # y.pred[i, j] ~ dbern(p[i])
-        # resid.y[i, j] <- pow(pow(y[i, j], 0.5) - pow(p[i], 0.5), 2)
-        # resid.y.pred[i, j] <- pow(pow(y.pred[i, j], 0.5) - pow(p[i], 0.5), 2)
+        y.pred[i, j] ~ dbern(p[i])
+        resid.y[i, j] <- pow(pow(y[i, j], 0.5) - pow(p[i], 0.5), 2)
+        resid.y.pred[i, j] <- pow(pow(y.pred[i, j], 0.5) - pow(p[i], 0.5), 2)
         
       } # j
       
@@ -595,23 +666,17 @@ cat(file = paste0(mod_path, mod_name),
       for (j in 1:J.a[i]) {
         
         # Log-linear combination for the number of vocalizations at site i during visit j for the zero-truncated poisson
-        v.lin.comb[i, times.a[i, j]] <- (delta[i, times.a[i, j]] * N[i] + omega) * phi[i, times.a[i, j]]
+        lambda.v[i, j] <- (delta[i, times.a[i, j]] * N[i] + omega) * phi[i, times.a[i, j]]
         
         # number of detected vocalizations for sites with at least one vocalization
-        v[i, times.a[i, j]] ~ dpois(v.lin.comb[i, times.a[i, j]] * y[i, times.a[i, j]])T(1, 1000)
+        v[i, times.a[i, j]] ~ dpois(lambda.v[i, j] * y[i, times.a[i, j]])T(1, 1000)
         
         # Posterior predictive checks for Bayesian P-value for singing rate ----
-        # v.pred[i, j] ~ dpois(v.lin.comb[i, times.a[i, j]] * y[i, times.a[i, j]])T(1, 1000)
-        
-        # Expected value for the number of vocalizations
-        mu.v[i, j] <- v.lin.comb[i, times.a[i, j]] / (1 - exp(-1 * v.lin.comb[i, times.a[i, j]]))
-        
-        # Freeman Tukey statistic for observed singing rate
-        # resid.v[i, j] <- pow(pow(v[i, times.a[i, j]], 0.5) - pow(mu.v[i, j], 0.5), 2)
-        
-        # Freeman Tukey statistic for simulated singing rate
-        # resid.v.pred[i, j] <- pow(pow(v.pred[i, j], 0.5) - pow(mu.v[i, j], 0.5), 2)
-        
+        v.pred[i, j] ~ dpois(lambda.v[i, j] * y[i, times.a[i, j]])T(1, 1000)
+        mu.v[i, j] <- lambda.v[i, j] / (1 - exp(-1 * lambda.v[i, j]))
+        resid.v[i, j] <- pow(pow(v[i, times.a[i, j]], 0.5) - pow(mu.v[i, j], 0.5), 2)
+        resid.v.pred[i, j] <- pow(pow(v.pred[i, j], 0.5) - pow(mu.v[i, j], 0.5), 2)
+
       } # j
     } # i
     
@@ -631,19 +696,24 @@ cat(file = paste0(mod_path, mod_name),
       } # j
     } # i
     
-    # Bayesian P-value ------------------------------------------------------
-    # for (i in 1:R) {
-    #   tmp.v[i] <- sum(resid.v[i, 1:J.a[i]])
-    #   tmp.v.pred[i] <- sum(resid.v.pred[i, 1:J.a[i]])
-    # }
+  # Bayesian P-value ------------------------------------------------------
+   for (i in 1:R) {
+    tmp.v[i] <- sum(resid.v[i, 1:J.a[i]])
+    tmp.v.pred[i] <- sum(resid.v.pred[i, 1:J.a[i]])
+   }
+
+  # Check model fit
+    fit.y <- sum(resid.y[sites.a, 1:J])
+    fit.y.pred <- sum(resid.y.pred[sites.a, 1:J])
+    fit.v <- sum(tmp.v[1:R])
+    fit.v.pred <- sum(tmp.v.pred[1:R])
+    bp.y <- step(fit.y.pred - fit.y)
+    bp.v <- step(fit.v.pred - fit.v)
     
-    # # Check model fit 
-    # fit.y <- sum(resid.y[sites.a, 1:J.max])
-    # fit.y.pred <- sum(resid.y.pred[sites.a, 1:J.max]) 
-    # fit.v <- sum(tmp.v[1:R])
-    # fit.v.pred <- sum(tmp.v.pred[1:R])
-    # bp.y <- step(fit.y.pred - fit.y)
-    # bp.v <- step(fit.v.pred - fit.v)
+    # Summary stats
+    mean.tp <- mean(tp[1:R, 1:J])           # Average proportion of true positives
+    voc.rate <- mean(delta[1:R, 1:J]) / 5   # Average number of vocalizations per minute 
+    
 } "
     ) # End model statement
 
@@ -651,41 +721,42 @@ cat(file = paste0(mod_path, mod_name),
 # Combine all of the data for jags  
 jags_dat <- list(
   # Data 
-  y = y,                 # Number of vocalizations (RxJ.max matrix)
-  n = n,                 # Number of validated detection (RxJ.max matrix)
-  # k = k,                 # Number of true positives by site (RxJ.max matrix)
-  days = days,           # Date of each recording (RxJ.max matrix)
-  n.days = n.days,       # Number of days
+  v = v,                 # Number of vocalizations (RxJ matrix)
+  y = y,                 # Sites with at least one vocalization (RxJ matrix)
+  n = n,                 # Number of validated detection (RxJ matrix)
+  k = k,                 # Number of true positives by site (RxJ matrix)
+  date = date,           # Date of each recording (RxJ matrix)ys
   # Site indexing constants 
   R = R,                 # Total number of sites (scalar)
-  # R.val = R.val,         # Number of sites where acoustic classifications were validated (scalar)
-  # sites.a = sites.a,     # Indexes of sites with acoustic detections (Vecor)
-  # sites.v = sites.v,     # Indexes of sites with validations (Vector)
+  R.val = R.val,         # Number of sites where acoustic classifications were validated (scalar)
+  sites.a = sites.a,     # Indexes of sites with acoustic detections (Vecor)
+  sites.v = sites.v,     # Indexes of sites with validations (Vector)
   # Time Indexing constants
-  J.max = J.max,             # Maximum number of intervals (Scalar)
-  J = J,                 # Total number of survey periods at each site (R vector)
-  # J.val = J.val,         # Number of vocalizations that were validated during each survey window (R vector)
-  J.a = J.a,             # Number of intervals with any vocalizations (R vector)
-  times.a = times.a     # Indexes of survey windows with vocalizations (R x J.a matrix)
-  # times.v = times.v      # Times when validations occurred (R.val x J.val matrix)
+  J = J,             # Maximum number of Hours (Scalar)
+  # J = J,                 # Total number of survey periods at each site (R vector)
+  J.val = J.val,         # Number of vocalizations that were validated during each survey window (R vector)
+  J.a = J.a,             # Number of Hours with any vocalizations (R vector)
+  times.a = times.a,     # Indexes of survey windows with vocalizations (R x J.a matrix)
+  times.v = times.v      # Times when validations occurred (R.val x J.val matrix)
 )
 # View
-jags_dat
+# jags_dat
 
 # ------------------------------------------------------------------------------
 # Initial Values 
 inits <- function() list(
   tau.beta0.site = runif(1, 0, 1),
   beta0.site = rnorm(R, 0, 1),
-  tau.gamma.day = runif(1, 0, 0.1),
-  gamma.day = rnorm(n.days, 0, 1),
+  gamma0 = rnorm(1, 0, 1),
+  gamma.date = rnorm(1, 0, 1),
+  gamma.date2 = rnorm(1, 0, 1),
   omega = runif(1, 0, 3),
   mu.alpha = runif(1, 0, 1),
   alpha.N = runif(1, 0, 3),
-  a.phi = runif(0, 3),
-  phi = matrix(runif(R*J.max, 0, 1), nrow = R, ncol = J.max, byrow = FALSE),
-  N = rpois(R, mean(v))
-  # K = K.inits
+  a.phi = runif(0, 1),
+  phi = matrix(runif(R*J, 0, 1), nrow = R, ncol = J, byrow = FALSE),
+  N = N.inits,
+  K = K.inits
 )
 
 # ------------------------------------------------------------------------------
@@ -694,18 +765,21 @@ params <- c(
   "beta0.site",
   "mu.alpha",
   "alpha.N",
-  "gamma.day",
   "a.phi",
   "omega",
-  "N"
-  # "bp.y",
-  # "bp.v"
+  "gamma0",
+  "gamma.date",
+  "gamma.date2",
+  "N",
+  "bp.y",
+  "bp.v",
+  "mean.tp",
+  "voc.rate"
 )
-sites.v
-times.v
+
 # ------------------------------------------------------------------------------
 # MCMC settings for
-nc <- 3  ;  ni <- 1500  ;  nb <- 500;  nt <- 2 
+nc <- 3  ;  ni <- 60000  ;  nb <- 30000;  nt <- 25
 
 # Quick check of how many samples we'll keep in the posterior
 message(paste((ni - nb) / nt), " samples will be kept from the posterior")
@@ -722,9 +796,20 @@ aru_abund_mod <- jags(data = jags_dat,
                       n.burnin = nb)
 difftime(Sys.time(), start)               # End time for the sampler
 
-
 # Save model output to local drive
-saveRDS(aru_abund_mod, file = paste0(mod_path, species_file, "_aru_abund_model.rds"))
+saveRDS(aru_abund_mod, file = paste0(mod_path, "_howa_aru_abund_model.rds"))
 
 # View model summary
-summary(aru_abund_mod)
+round(summary(aru_abund_mod), 2)
+
+# Traceplots and density graphs 
+MCMCtrace(object = aru_abund_mod$samples,
+          params = "all",
+          # excl = c(""),
+          pdf = TRUE,
+          open_pdf = TRUE,
+          ind = TRUE,
+          n.eff = TRUE,
+          wd = "C:\\Users\\willh\\Documents\\NCSU\\Model_Outputs",
+          filename = "model_AV_traceplot",
+          type = 'both')
